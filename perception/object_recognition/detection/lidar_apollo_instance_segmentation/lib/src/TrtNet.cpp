@@ -38,6 +38,14 @@ using namespace plugin;
 
 static Tn::Logger gLogger;
 
+#define RETURN_AND_LOG(ret, severity, message)                            \
+  do {                                                                    \
+    std::string error_message = "ssd_error_log: " + std::string(message); \
+    gLogger.log(ILogger::Severity::k##severity, error_message.c_str());   \
+    return (ret);                                                         \
+  } while (0)
+
+
 inline void * safeCudaMalloc(size_t memSize)
 {
   void * deviceMem;
@@ -73,6 +81,41 @@ inline unsigned int getElementSize(nvinfer1::DataType t)
 
 namespace Tn
 {
+trtNet::trtNet(
+  const std::string & prototxt, const std::string & caffemodel,
+  const std::vector<std::string> & outputNodesName,
+  const std::vector<std::vector<float>> & calibratorData, RUN_MODE mode /*= RUN_MODE::FLOAT32*/,bool enable_dla)
+: mTrtContext(nullptr),
+  mTrtEngine(nullptr),
+  mTrtRunTime(nullptr),
+  mTrtRunMode(mode),
+  mTrtInputCount(0),
+  enable_dla_(enable_dla),
+  mTrtIterationTime(0)
+{
+  std::cout << "init plugin proto: " << prototxt << " caffemodel: " << caffemodel << std::endl;
+  auto parser = createCaffeParser();
+
+  const int maxBatchSize = 1;
+  IHostMemory * trtModelStream{nullptr};
+
+  ICudaEngine * tmpEngine = loadModelAndCreateEngine(
+    prototxt.c_str(), caffemodel.c_str(), maxBatchSize, parser, trtModelStream, outputNodesName);
+  assert(tmpEngine != nullptr);
+  assert(trtModelStream != nullptr);
+  tmpEngine->destroy();
+  
+  mTrtRunTime = createInferRuntime(gLogger);
+  assert(mTrtRunTime != nullptr);
+  mTrtEngine = mTrtRunTime->deserializeCudaEngine(
+    trtModelStream->data(), trtModelStream->size(), nullptr);
+  assert(mTrtEngine != nullptr);
+  // Deserialize the engine.
+  trtModelStream->destroy();
+
+  InitEngine();
+}
+
 trtNet::trtNet(const std::string & engineFile)
 : mTrtContext(nullptr),
   mTrtEngine(nullptr),
@@ -137,8 +180,14 @@ void trtNet::doInference(const void * inputData, void * outputData)
       mTrtCudaBuffer[inputIndex], inputData, mTrtBindBufferSize[inputIndex], cudaMemcpyHostToDevice,
       mTrtCudaStream));
 
+  auto t_start = std::chrono::high_resolution_clock::now();  
   mTrtContext->execute(batchSize, &mTrtCudaBuffer[inputIndex]);
-
+  auto t_end = std::chrono::high_resolution_clock::now();
+  float total = std::chrono::duration<float, std::milli>(t_end - t_start).count();
+  if(0) //default does not print
+  {
+    std::cout << "Time taken for inference is " << total << " ms." << std::endl; 
+  }
   for (size_t bindingIdx = mTrtInputCount; bindingIdx < mTrtBindBufferSize.size(); ++bindingIdx) {
     auto size = mTrtBindBufferSize[bindingIdx];
     CUDA_CHECK(
@@ -146,4 +195,99 @@ void trtNet::doInference(const void * inputData, void * outputData)
         outputData, mTrtCudaBuffer[bindingIdx], size, cudaMemcpyDeviceToHost, mTrtCudaStream));
   }
 }
+
+
+nvinfer1::ICudaEngine * trtNet::loadModelAndCreateEngine(
+  const char * deployFile, const char * modelFile, int maxBatchSize, ICaffeParser * parser,
+  IHostMemory *& trtModelStream, const std::vector<std::string> & outputNodesName)
+{
+  // Create the builder
+  IBuilder * builder = createInferBuilder(gLogger);
+  IBuilderConfig * config = builder->createBuilderConfig();
+
+  // Parse the model to populate the network, then set the outputs.
+  INetworkDefinition * network = builder->createNetworkV2(0U);
+
+  std::cout << "Begin parsing model..." << std::endl;
+  const IBlobNameToTensor * blobNameToTensor =
+    parser->parse(deployFile, modelFile, *network, nvinfer1::DataType::kFLOAT);
+  if (!blobNameToTensor) 
+  {
+    RETURN_AND_LOG(nullptr, ERROR, "Fail to parse");
+    // cout<<"Fail to parse"<<endl;
+    return nullptr;
+  }
+  std::cout << "End parsing model..." << std::endl;
+
+  // specify which tensors are outputs
+  for (auto & name : outputNodesName) {
+    auto output = blobNameToTensor->find(name.c_str());
+    assert(output != nullptr);
+    if (output == nullptr) std::cout << "can not find output named " << name << std::endl;
+
+    network->markOutput(*output);
+  }
+
+  // Build the engine.
+  builder->setMaxBatchSize(maxBatchSize);
+  config->setMaxWorkspaceSize(1 << 30);  // 1G
+  if (mTrtRunMode == RUN_MODE::INT8) {
+    std::cout << "setInt8Mode" << std::endl;
+    if (!builder->platformHasFastInt8())
+      std::cout << "Notice: the platform do not has fast for int8" << std::endl;
+    config->setFlag(BuilderFlag::kINT8);
+    // config->setInt8Calibrator(calibrator);
+  } else if (mTrtRunMode == RUN_MODE::FLOAT16) {
+    std::cout << "setFp16Mode" << std::endl;
+    if (!builder->platformHasFastFp16())
+      std::cout << "Notice: the platform do not has fast for fp16" << std::endl;
+    config->setFlag(BuilderFlag::kFP16);
+  }else
+  {
+      std::cout << "setFp32Mode" << std::endl;
+  }
+  
+  if(enable_dla_)
+  {
+    std::cout<<"enable DLA"<<std::endl;
+    config->setFlag(BuilderFlag::kGPU_FALLBACK); //无法跑在DLA上则退回到GPU上
+    config->setDefaultDeviceType(DeviceType::kDLA);
+    int dlaCore = 0;//跑在哪个DLA核上. xavier一共有两个DLA
+    config->setDLACore(dlaCore);
+
+    int nbLayers = network->getNbLayers();
+    int layersOnDLA = 0;
+    std::cout << "Total number of layers: " << nbLayers << std::endl;
+    for (int i = 0; i < nbLayers; i++)
+    {
+        nvinfer1::ILayer* curLayer = network->getLayer(i);
+        if(config->canRunOnDLA(curLayer))
+        {
+            config->setFlag(BuilderFlag::kFP16);
+            config->setDeviceType(curLayer, nvinfer1::DeviceType::kDLA);
+            layersOnDLA++;
+            std::cout << "Set layer " << curLayer->getName() << " to run on DLA" << std::endl;
+        }
+    }
+    std::cout << "Total number of layers on DLA: " << layersOnDLA << std::endl;
+  }
+   
+  std::cout << "Begin building engine..." << std::endl;
+  ICudaEngine * engine = builder->buildEngineWithConfig(*network, *config);
+  if (!engine) RETURN_AND_LOG(nullptr, ERROR, "Unable to create engine");
+  std::cout << "End building engine..." << std::endl;
+
+  // We don't need the network any more, and we can destroy the parser.
+  network->destroy();
+  parser->destroy();
+
+  // Serialize the engine, then close everything down.
+  trtModelStream = engine->serialize();
+
+  builder->destroy();
+  config->destroy();
+  shutdownProtobufLibrary();
+  return engine;
+}
+
 }  // namespace Tn

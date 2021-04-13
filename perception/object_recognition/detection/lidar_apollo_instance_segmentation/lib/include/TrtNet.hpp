@@ -44,6 +44,12 @@ public:
   // Load from engine file
   explicit trtNet(const std::string & engineFile);
 
+  // Load from caffe model
+  trtNet(
+    const std::string & prototxt, const std::string & caffeModel,
+    const std::vector<std::string> & outputNodesName,
+    const std::vector<std::vector<float>> & calibratorData, RUN_MODE mode = RUN_MODE::FLOAT32,bool enable_dla=false);
+
   ~trtNet()
   {
     // Release the stream and the buffers
@@ -87,6 +93,11 @@ public:
   }
 
 private:
+  nvinfer1::ICudaEngine * loadModelAndCreateEngine(
+    const char * deployFile, const char * modelFile, int maxBatchSize,
+    nvcaffeparser1::ICaffeParser * parser, nvinfer1::IHostMemory *& trtModelStream,
+    const std::vector<std::string> & outputNodesName);
+
   void InitEngine();
 
   nvinfer1::IExecutionContext * mTrtContext;
@@ -95,10 +106,13 @@ private:
   cudaStream_t mTrtCudaStream;
   Profiler mTrtProfiler;
   RUN_MODE mTrtRunMode;
-
+  
   std::vector<void *> mTrtCudaBuffer;
   std::vector<int64_t> mTrtBindBufferSize;
   int mTrtInputCount;
+
+  bool enable_dla_;
+  int mTrtIterationTime;
 };
 }  // namespace Tn
 

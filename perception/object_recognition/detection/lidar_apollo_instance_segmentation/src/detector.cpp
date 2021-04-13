@@ -17,6 +17,7 @@
 #include "NvInfer.h"
 #include "lidar_apollo_instance_segmentation/feature_map.hpp"
 #include "pcl_conversions/pcl_conversions.h"
+#include <ament_index_cpp/get_package_share_directory.hpp>
 
 LidarApolloInstanceSegmentation::LidarApolloInstanceSegmentation(rclcpp::Node * node)
 : node_(node),
@@ -40,42 +41,86 @@ LidarApolloInstanceSegmentation::LidarApolloInstanceSegmentation(rclcpp::Node * 
   target_frame_ = node_->declare_parameter("target_frame", "base_link");
   z_offset_ = node_->declare_parameter("z_offset", 2);
 
-  // load weight file
-  std::ifstream fs(engine_file);
-  if (!fs.is_open()) {
+  std::string cfg_run_mode = node_->declare_parameter("run_mode", "");
+  RCLCPP_INFO(node_->get_logger(), "cfg_run_mode:%s", cfg_run_mode.c_str());
+  
+//   std::string package_path = ros::package::getPath("lidar_apollo_instance_segmentation");
+  std::string package_path = ament_index_cpp::get_package_share_directory("lidar_apollo_instance_segmentation");
+  std::string engine_path;
+  Tn::RUN_MODE run_mode = Tn::RUN_MODE::FLOAT16;
+  bool enable_dla = false; //after test,found that it does not improve performance
+  if(cfg_run_mode == "fp32")
+  {
+      run_mode = Tn::RUN_MODE::FLOAT32;
+      engine_path = engine_file.substr(0,engine_file.length()-7) + "-fp32.engine";
+  }
+  else if(cfg_run_mode == "fp16")
+  {
+      run_mode = Tn::RUN_MODE::FLOAT16;
+      engine_path = engine_file.substr(0,engine_file.length()-7) + "-fp16.engine";
+  }
+
+  std::ifstream fs(engine_path);
+  if (fs.is_open()) 
+  {
+    net_ptr_.reset(new Tn::trtNet(engine_path));
+  } 
+  else 
+  {
     RCLCPP_INFO(
       node_->get_logger(),
       "Could not find %s. try making TensorRT engine from caffemodel and prototxt",
       engine_file.c_str());
-    Tn::Logger logger;
-    nvinfer1::IBuilder * builder = nvinfer1::createInferBuilder(logger);
-    nvinfer1::INetworkDefinition * network = builder->createNetworkV2(0U);
-    nvcaffeparser1::ICaffeParser * parser = nvcaffeparser1::createCaffeParser();
-    nvinfer1::IBuilderConfig * config = builder->createBuilderConfig();
-    const nvcaffeparser1::IBlobNameToTensor * blob_name2tensor = parser->parse(
-      prototxt_file.c_str(), caffemodel_file.c_str(), *network, nvinfer1::DataType::kFLOAT);
+
+    boost::filesystem::create_directories(package_path + "/data");
     std::string output_node = "deconv0";
-    auto output = blob_name2tensor->find(output_node.c_str());
-    if (output == nullptr) {
-      RCLCPP_ERROR(node_->get_logger(), "can not find output named %s", output_node.c_str());
-    }
-    network->markOutput(*output);
-    const int batch_size = 1;
-    builder->setMaxBatchSize(batch_size);
-    config->setMaxWorkspaceSize(1 << 30);
-    nvinfer1::ICudaEngine * engine = builder->buildEngineWithConfig(*network, *config);
-    nvinfer1::IHostMemory * trt_model_stream = engine->serialize();
-    assert(trt_model_stream != nullptr);
-    std::ofstream outfile(engine_file, std::ofstream::binary);
-    assert(!outfile.fail());
-    outfile.write(reinterpret_cast<char *>(trt_model_stream->data()), trt_model_stream->size());
-    outfile.close();
-    network->destroy();
-    parser->destroy();
-    builder->destroy();
-    config->destroy();
-  }
-  net_ptr_.reset(new Tn::trtNet(engine_file));
+    std::vector<std::string> output_name;
+    output_name.push_back(output_node);
+    std::vector<std::vector<float>> calib_data;
+    
+    net_ptr_.reset(
+      new Tn::trtNet(prototxt_file, caffemodel_file, output_name, calib_data, run_mode,enable_dla));
+    
+    net_ptr_->saveEngine(engine_path);
+
+    std::cout<<"load engine successfully"<<std::endl;
+  } 
+//   // load weight file
+//   std::ifstream fs(engine_file);
+//   if (!fs.is_open()) {
+//     RCLCPP_INFO(
+//       node_->get_logger(),
+//       "Could not find %s. try making TensorRT engine from caffemodel and prototxt",
+//       engine_file.c_str());
+//     Tn::Logger logger;
+//     nvinfer1::IBuilder * builder = nvinfer1::createInferBuilder(logger);
+//     nvinfer1::INetworkDefinition * network = builder->createNetworkV2(0U);
+//     nvcaffeparser1::ICaffeParser * parser = nvcaffeparser1::createCaffeParser();
+//     nvinfer1::IBuilderConfig * config = builder->createBuilderConfig();
+//     const nvcaffeparser1::IBlobNameToTensor * blob_name2tensor = parser->parse(
+//       prototxt_file.c_str(), caffemodel_file.c_str(), *network, nvinfer1::DataType::kFLOAT);
+//     std::string output_node = "deconv0";
+//     auto output = blob_name2tensor->find(output_node.c_str());
+//     if (output == nullptr) {
+//       RCLCPP_ERROR(node_->get_logger(), "can not find output named %s", output_node.c_str());
+//     }
+//     network->markOutput(*output);
+//     const int batch_size = 1;
+//     builder->setMaxBatchSize(batch_size);
+//     config->setMaxWorkspaceSize(1 << 30);
+//     nvinfer1::ICudaEngine * engine = builder->buildEngineWithConfig(*network, *config);
+//     nvinfer1::IHostMemory * trt_model_stream = engine->serialize();
+//     assert(trt_model_stream != nullptr);
+//     std::ofstream outfile(engine_file, std::ofstream::binary);
+//     assert(!outfile.fail());
+//     outfile.write(reinterpret_cast<char *>(trt_model_stream->data()), trt_model_stream->size());
+//     outfile.close();
+//     network->destroy();
+//     parser->destroy();
+//     builder->destroy();
+//     config->destroy();
+//   }
+//   net_ptr_.reset(new Tn::trtNet(engine_file));
 
   // feature map generator: pre process
   feature_generator_ = std::make_shared<FeatureGenerator>(

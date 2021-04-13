@@ -10,6 +10,7 @@
   <arg name="trained_prototxt_file" default="$(find-pkg-share lidar_apollo_instance_segmentation)/data/$(var base_name).prototxt" />
   <arg name="trained_caffemodel_file" default="$(find-pkg-share lidar_apollo_instance_segmentation)/data/$(var base_name).caffemodel" />
   <arg name="param_file" default="$(find-pkg-share lidar_apollo_instance_segmentation)/config/$(var base_name).param.yaml"/>
+  <arg name="run_mode" default="fp16"/>
 
   <arg name="target_frame" default="base_link" />
   <arg name="z_offset" default="-2" />
@@ -24,5 +25,6 @@
     <param name="z_offset" value="$(var z_offset)"/>
     <param name="target_frame" value="$(var target_frame)"/>
     <param from="$(var param_file)"/>
+    <param name="run_mode" value="$(var run_mode)"/>
   </node>
 </launch>
