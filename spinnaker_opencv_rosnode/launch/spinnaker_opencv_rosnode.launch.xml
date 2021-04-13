@@ -1,0 +1,4 @@
+<launch>
+  <node pkg="spinnaker_opencv_rosnode" exec="spinnaker_opencv_rosnode" name="spinnaker_opencv_rosnode" output="screen">
+  </node>
+</launch>

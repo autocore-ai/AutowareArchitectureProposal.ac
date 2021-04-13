@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>spinnaker_opencv_rosnode</name>
+  <version>0.1.0</version>
+  <description>The spinnaker_opencv_rosnode package</description>
+
+  <maintainer email="chang.su@autocore.ai">Yukihiro Saito</maintainer>
+  <license>Apache2</license>
+
+  <buildtool_depend>ament_cmake_auto</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
+  <depend>cv_bridge</depend>
+  <depend>sensor_msgs</depend>
+  <!-- The export tag contains other, unspecified, tags -->
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
