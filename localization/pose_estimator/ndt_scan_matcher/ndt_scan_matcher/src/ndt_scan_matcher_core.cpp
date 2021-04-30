@@ -210,13 +210,11 @@ void NDTScanMatcher::serviceNDTAlign(
   if (ndt_ptr_->getInputTarget() == nullptr) {
     // TODO wait for map pointcloud
     throw std::runtime_error("No InputTarget");
-    return false;
   }
 
   if (ndt_ptr_->getInputSource() == nullptr) {
     // TODO wait for sensor pointcloud
     throw std::runtime_error("No InputSource");
-    return false;
   }
 
   // mutex Map
@@ -227,8 +225,6 @@ void NDTScanMatcher::serviceNDTAlign(
   key_value_stdmap_["state"] = "Sleeping";
   res->seq = req->seq;
   res->pose_with_cov.pose.covariance = req->pose_with_cov.pose.covariance;
-
-  return true;
 }
 
 void NDTScanMatcher::callbackInitialPose(
