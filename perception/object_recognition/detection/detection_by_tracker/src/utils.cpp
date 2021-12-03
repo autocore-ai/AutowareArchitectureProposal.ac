@@ -120,7 +120,8 @@ double get2dRecall(
   toPolygon2d(target_object, target_polygon);
 
   std::vector<autoware_utils::Polygon2d> intersection_polygons;
-  boost::geometry::union_(source_polygon, target_polygon, intersection_polygons);
+  // boost::geometry::union_(source_polygon, target_polygon, intersection_polygons);    // 原来的
+  boost::geometry::intersection(source_polygon, target_polygon, intersection_polygons); // 我改的
 
   double intersection_area = 0.0;
   double target_area = 0.0;

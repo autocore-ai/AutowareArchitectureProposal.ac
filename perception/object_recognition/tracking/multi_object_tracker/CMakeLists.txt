@@ -22,6 +22,7 @@ find_package(ament_cmake_auto REQUIRED)
 ### Find Eigen Dependencies
 find_package(eigen3_cmake_module REQUIRED)
 find_package(Eigen3 REQUIRED)
+include_directories(${EIGEN3_INCLUDE_DIR})
 
 ### Find dependencies listed in the package.xml
 ament_auto_find_build_dependencies()
